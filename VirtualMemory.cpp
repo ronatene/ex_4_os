@@ -1,7 +1,7 @@
 #include "PhysicalMemory.h"
 #include "VirtualMemory.h"
 # include "MemoryConstants.h"
-
+#include <cassert>
 
 void VMinitialize() {
     // Initialize the virtual memory
@@ -74,30 +74,6 @@ uint64_t GetMaxFrame() {
 bool ShouldUseMaxFrame(uint64_t MaxFrameIndex){
     return MaxFrameIndex + 1 < NUM_FRAMES;
 }
-//
-//
-//int choose_frame_to_swap(uint64_t page_to_swap_in, uint64_t frames[NUM_FRAMES]) {
-//    int frame_to_swap = -1;
-//    uint64_t max_distance = 0;
-//
-//    for (int i = 0; i < NUM_FRAMES; ++i) {
-//        uint64_t p = frames[i];
-//        uint64_t abs_distance = std::abs((int64_t)page_to_swap_in - (int64_t)p);
-//
-//        uint64_t cyclical_distance = std::min(NUM_PAGES - abs_distance, abs_distance);
-//
-////        std::cout << "Frame " << i << " contains page " << p
-////                  << " -> cyclical distance to page " << page_to_swap_in
-////                  << " is " << cyclical_distance << std::endl;
-//
-//        if (cyclical_distance > max_distance) {
-//            max_distance = cyclical_distance;
-//            frame_to_swap = i;
-//        }
-//    }
-//    return frame_to_swap;
-//}
-
 
 void clearFrame(uint64_t frame) {
     // Clear the frame by writing zeros to all entries
@@ -140,14 +116,14 @@ uint64_t CyclicalDistance(uint64_t a, uint64_t b) {
     return std::min(NUM_PAGES - abs_diff, abs_diff);
 }
 
-
-uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame, uint64_t parent_offset) {
+uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame, uint64_t parent_offset, bool protected_frames[NUM_FRAMES]) {
     // Allocate a new frame for the given page, either by finding an empty table or evicting an existing one
     uint64_t max_frame = GetMaxFrame();
     // if there is an empty table, we can use it
     for (uint64_t f = 1; f <= max_frame; ++f) {
-        if (CheckEmptyTable(f)) {
+        if (CheckEmptyTable(f) && !protected_frames[f]) {
             PMwrite(parent_frame * PAGE_SIZE + parent_offset, f);
+            protected_frames[f] = true;
             return f;
         }
     }
@@ -157,6 +133,7 @@ uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame, uint64_t
         uint64_t new_frame = max_frame + 1;
         clearFrame(new_frame);
         PMwrite(parent_frame * PAGE_SIZE + parent_offset, new_frame);
+        protected_frames[new_frame] = true;
         return new_frame;
     }
 
@@ -171,7 +148,7 @@ uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame, uint64_t
     uint64_t frame_to_evict = 0;
 
     for (uint64_t f = 1; f < NUM_FRAMES; ++f) {
-        if (!used_frames[f]) continue;
+        if (!used_frames[f] || protected_frames[f]) continue;
 
         uint64_t p = page_per_frame[f];
         uint64_t cyclical_dist = CyclicalDistance(page_to_swap_in, p);
@@ -185,13 +162,13 @@ uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame, uint64_t
     // Evict the chosen frame
     PMevict(frame_to_evict, page_per_frame[frame_to_evict]);
     clearFrame(frame_to_evict);
+    RemoveReference(frame_to_evict, 0, 0); // Remove references to the evicted frame
     PMwrite(parent_frame * PAGE_SIZE + parent_offset, frame_to_evict);
 
     return frame_to_evict;
 }
 
-// פונקציה לחישוב כתובת הפריים הסופי שמייצג את הדף של כתובת וירטואלית
-uint64_t ResolveAddress(uint64_t virtualAddress, bool allocate_if_missing) {
+uint64_t ResolveAddress(uint64_t virtualAddress, bool allocate_if_missing, bool protected_frames[NUM_FRAMES]) {
     uint64_t page_index, offset;
     SplitOffsetPage(virtualAddress, &page_index, &offset);
 
@@ -205,29 +182,48 @@ uint64_t ResolveAddress(uint64_t virtualAddress, bool allocate_if_missing) {
         PMread(current_frame * PAGE_SIZE + idx, &next_frame);
 
         if (next_frame == 0) {
-            if (!allocate_if_missing) return UINT64_MAX; // לא מקצה
-            next_frame = AllocateFrame(page_index, current_frame, idx);
+            if (!allocate_if_missing) return UINT64_MAX; // If allocation is not allowed, return an invalid address
+            next_frame = AllocateFrame(page_index, current_frame, idx, protected_frames);
         }
         current_frame = next_frame;
     }
     return current_frame * PAGE_SIZE + offset;
 }
 
-uint64_t traversePageTable(){
-    // Traverse from root to the leaf frame
+// Function to remove reference from parent table
+void RemoveReference(uint64_t frame_to_remove, uint64_t curr_frame, uint64_t depth) {
+    if (depth == TABLES_DEPTH) {
+        return; // This is a leaf page, no children to check
+    }
+
+    for (uint64_t offset = 0; offset < PAGE_SIZE; ++offset) {
+        word_t next;
+        PMread(curr_frame * PAGE_SIZE + offset, &next);
+        if (next == frame_to_remove) {
+            // Found the reference, remove it
+            PMwrite(curr_frame * PAGE_SIZE + offset, 0);
+            return;
+        } else if (next != 0) {
+            // Recursively search in child tables
+            RemoveReference(frame_to_remove, next, depth + 1);
+        }
+    }
 }
-
-
-
-void GetNextFrame{
-}
-
 
 int VMread(uint64_t virtualAddress, word_t* value){
     assert(virtualAddress < VIRTUAL_MEMORY_SIZE);
+    bool protected_frames[NUM_FRAMES] = {false};
+    uint64_t phys_addr = ResolveAddress(virtualAddress, false, protected_frames);
+    if (phys_addr == UINT64_MAX) return 0;
+    PMread(phys_addr, value);
+    return 1;
 }
-
 
 int VMwrite(uint64_t virtualAddress, word_t value){
     assert(virtualAddress < VIRTUAL_MEMORY_SIZE);
+    bool protected_frames[NUM_FRAMES] = {false};
+    uint64_t phys_addr = ResolveAddress(virtualAddress, true, protected_frames);
+    if (phys_addr == UINT64_MAX) return 0;
+    PMwrite(phys_addr, value);
+    return 1;
 }
