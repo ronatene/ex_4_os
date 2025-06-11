@@ -56,6 +56,19 @@ bool CheckEmptyTable(uint64_t frameIndex) {
     return true;  // All entries are 0 → table is empty
 }
 
+uint64_t GetMaxFrame() {
+    uint64_t max_frame = 0;
+    word_t value;
+    for (uint64_t addr = 0; addr < NUM_FRAMES * PAGE_SIZE; ++addr) {
+        PMread(addr, &value);
+        uint64_t current_frame = addr / PAGE_SIZE;
+        if (value != 0 && current_frame > max_frame) {
+            max_frame = current_frame;
+        }
+    }
+    return max_frame;
+}
+
 
 bool ShouldUseMaxFrame(uint64_t MaxFrameIndex){
     return MaxFrameIndex + 1 < NUM_FRAMES;
@@ -90,6 +103,61 @@ void clearFrame(uint64_t frame) {
     for (int i = 0; i < PAGE_SIZE; ++i) {
         PMwrite(frame * PAGE_SIZE + i, 0);
     }
+}
+
+uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame, uint64_t parent_offset) {
+    uint64_t max_frame = GetMaxFrame();
+
+    // שלב א: חיפוש טבלה ריקה
+    for (uint64_t f = 1; f <= max_frame; ++f) {
+        if (CheckEmptyTable(f)) {
+            clearFrame(f);
+            PMwrite(parent_frame * PAGE_SIZE + parent_offset, f);
+            return f;
+        }
+    }
+
+    // שלב ב: האם ניתן להשתמש בפריים חדש?
+    if (ShouldUseMaxFrame(max_frame)) {
+        uint64_t new_frame = max_frame + 1;
+        clearFrame(new_frame);
+        PMwrite(parent_frame * PAGE_SIZE + parent_offset, new_frame);
+        return new_frame;
+    }
+
+    // שלב ג: eviction
+    uint64_t pages[NUM_FRAMES];
+    for (int i = 0; i < NUM_FRAMES; ++i) pages[i] = i; // ניתן לשפר
+    int to_swap = choose_frame_to_swap(page_to_swap_in, pages);
+    uint64_t frame_to_evict = pages[to_swap];
+
+    PMevict(frame_to_evict, frame_to_evict); // נעשה לו סוואפ (assume page = frame)
+    clearFrame(frame_to_evict);
+    PMwrite(parent_frame * PAGE_SIZE + parent_offset, frame_to_evict);
+    return frame_to_evict;
+}
+
+// פונקציה לחישוב כתובת הפריים הסופי שמייצג את הדף של כתובת וירטואלית
+uint64_t ResolveAddress(uint64_t virtualAddress, bool allocate_if_missing) {
+    uint64_t page_index, offset;
+    SplitOffsetPage(virtualAddress, &page_index, &offset);
+
+    uint64_t level_indices[TABLES_DEPTH];
+    SplitPageIndexByLevels(page_index, level_indices);
+
+    uint64_t current_frame = 0;
+    for (int depth = 0; depth < TABLES_DEPTH; ++depth) {
+        uint64_t idx = level_indices[depth];
+        word_t next_frame;
+        PMread(current_frame * PAGE_SIZE + idx, &next_frame);
+
+        if (next_frame == 0) {
+            if (!allocate_if_missing) return UINT64_MAX; // לא מקצה
+            next_frame = AllocateFrame(page_index, current_frame, idx);
+        }
+        current_frame = next_frame;
+    }
+    return current_frame * PAGE_SIZE + offset;
 }
 
 uint64_t traversePageTable(){
