@@ -74,29 +74,29 @@ uint64_t GetMaxFrame() {
 bool ShouldUseMaxFrame(uint64_t MaxFrameIndex){
     return MaxFrameIndex + 1 < NUM_FRAMES;
 }
-
-
-int choose_frame_to_swap(uint64_t page_to_swap_in, uint64_t frames[NUM_FRAMES]) {
-    int frame_to_swap = -1;
-    uint64_t max_distance = 0;
-
-    for (int i = 0; i < NUM_FRAMES; ++i) {
-        uint64_t p = frames[i];
-        uint64_t abs_distance = std::abs((int64_t)page_to_swap_in - (int64_t)p);
-
-        uint64_t cyclical_distance = std::min(NUM_PAGES - abs_distance, abs_distance);
-
-//        std::cout << "Frame " << i << " contains page " << p
-//                  << " -> cyclical distance to page " << page_to_swap_in
-//                  << " is " << cyclical_distance << std::endl;
-
-        if (cyclical_distance > max_distance) {
-            max_distance = cyclical_distance;
-            frame_to_swap = i;
-        }
-    }
-    return frame_to_swap;
-}
+//
+//
+//int choose_frame_to_swap(uint64_t page_to_swap_in, uint64_t frames[NUM_FRAMES]) {
+//    int frame_to_swap = -1;
+//    uint64_t max_distance = 0;
+//
+//    for (int i = 0; i < NUM_FRAMES; ++i) {
+//        uint64_t p = frames[i];
+//        uint64_t abs_distance = std::abs((int64_t)page_to_swap_in - (int64_t)p);
+//
+//        uint64_t cyclical_distance = std::min(NUM_PAGES - abs_distance, abs_distance);
+//
+////        std::cout << "Frame " << i << " contains page " << p
+////                  << " -> cyclical distance to page " << page_to_swap_in
+////                  << " is " << cyclical_distance << std::endl;
+//
+//        if (cyclical_distance > max_distance) {
+//            max_distance = cyclical_distance;
+//            frame_to_swap = i;
+//        }
+//    }
+//    return frame_to_swap;
+//}
 
 
 void clearFrame(uint64_t frame) {
@@ -126,7 +126,7 @@ void ScanUsedFrames(
         word_t next;
         PMread(curr_frame * PAGE_SIZE + offset, &next);
 
-        if (next != 0 && next != 0) {
+        if (next != 0) {
             // Recursively scan the child frame
             uint64_t next_page_path = (page_path << OFFSET_WIDTH) | offset;
             ScanUsedFrames(next, depth + 1, next_page_path, used_frames, page_per_frame);
