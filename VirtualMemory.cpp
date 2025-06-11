@@ -2,6 +2,7 @@
 #include "VirtualMemory.h"
 # include "MemoryConstants.h"
 #include <cassert>
+#include <algorithm>
 
 void VMinitialize() {
     // Initialize the virtual memory
@@ -116,6 +117,26 @@ uint64_t CyclicalDistance(uint64_t a, uint64_t b) {
     return std::min(NUM_PAGES - abs_diff, abs_diff);
 }
 
+// Function to remove reference from parent table
+void RemoveReference(uint64_t frame_to_remove, uint64_t curr_frame, uint64_t depth) {
+    if (depth == TABLES_DEPTH) {
+        return; // This is a leaf page, no children to check
+    }
+
+    for (uint64_t offset = 0; offset < PAGE_SIZE; ++offset) {
+        word_t next;
+        PMread(curr_frame * PAGE_SIZE + offset, &next);
+        if (next == frame_to_remove) {
+            // Found the reference, remove it
+            PMwrite(curr_frame * PAGE_SIZE + offset, 0);
+            return;
+        } else if (next != 0) {
+            // Recursively search in child tables
+            RemoveReference(frame_to_remove, next, depth + 1);
+        }
+    }
+}
+
 uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame, uint64_t parent_offset, bool protected_frames[NUM_FRAMES]) {
     // Allocate a new frame for the given page, either by finding an empty table or evicting an existing one
     uint64_t max_frame = GetMaxFrame();
@@ -164,7 +185,7 @@ uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame, uint64_t
     clearFrame(frame_to_evict);
     RemoveReference(frame_to_evict, 0, 0); // Remove references to the evicted frame
     PMwrite(parent_frame * PAGE_SIZE + parent_offset, frame_to_evict);
-
+    assert(frame_to_evict < NUM_FRAMES);
     return frame_to_evict;
 }
 
@@ -187,27 +208,10 @@ uint64_t ResolveAddress(uint64_t virtualAddress, bool allocate_if_missing, bool 
         }
         current_frame = next_frame;
     }
+    printf("Resolved virtual address %llu to physical frame %llu with offset %llu\n", virtualAddress, current_frame, offset);
+    assert(current_frame < NUM_FRAMES);
+    assert(offset < PAGE_SIZE);
     return current_frame * PAGE_SIZE + offset;
-}
-
-// Function to remove reference from parent table
-void RemoveReference(uint64_t frame_to_remove, uint64_t curr_frame, uint64_t depth) {
-    if (depth == TABLES_DEPTH) {
-        return; // This is a leaf page, no children to check
-    }
-
-    for (uint64_t offset = 0; offset < PAGE_SIZE; ++offset) {
-        word_t next;
-        PMread(curr_frame * PAGE_SIZE + offset, &next);
-        if (next == frame_to_remove) {
-            // Found the reference, remove it
-            PMwrite(curr_frame * PAGE_SIZE + offset, 0);
-            return;
-        } else if (next != 0) {
-            // Recursively search in child tables
-            RemoveReference(frame_to_remove, next, depth + 1);
-        }
-    }
 }
 
 int VMread(uint64_t virtualAddress, word_t* value){
