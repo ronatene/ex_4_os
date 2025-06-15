@@ -107,7 +107,7 @@ void ScanUsedFrames(
         *max_frame_seen = curr_frame;
     }
 
-    if (depth == TABLES_DEPTH) {
+    if (depth == TABLES_DEPTH - 1) {
         page_per_frame[curr_frame] = page_path;
         return;     
     }
@@ -139,9 +139,7 @@ uint64_t CyclicalDistance(uint64_t a, uint64_t b) {
     for (uint64_t offset = 0; offset < PAGE_SIZE; ++offset) {
         word_t next;
         PMread(curr_frame * PAGE_SIZE + offset, &next);
-
         if (next == frame_to_remove) {
-            printf("Removing reference to frame %llu from frame %llu at offset %llu\n", frame_to_remove, curr_frame, offset);
             PMwrite(curr_frame * PAGE_SIZE + offset, 0);
         }
         if (next != 0 && next != frame_to_remove) {
@@ -160,7 +158,6 @@ uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame, uint64_t
     // if there is an empty table, we can use it
     for (uint64_t f = 1; f <= max_frame; ++f) {
         if (CheckEmptyTable(f) && !protected_frames[f]) {
-            //PMwrite(parent_frame * PAGE_SIZE + parent_offset, f);
             return f;
         }
     }
@@ -168,15 +165,13 @@ uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame, uint64_t
     if (ShouldUseMaxFrame(max_frame)) {
         uint64_t new_frame = max_frame + 1;
         clearFrame(new_frame);
-        //PMwrite(parent_frame * PAGE_SIZE + parent_offset, new_frame);
         return new_frame;
     }
     // find the frame based on max cyclical distance
     uint64_t max_distance = 0;
     uint64_t frame_to_evict = 0;
     for (uint64_t f = 1; f < NUM_FRAMES; ++f) {
-        if (!used_frames[f] || protected_frames[f] || page_per_frame[f] == 0 ) continue;
-        
+        if (!used_frames[f] || protected_frames[f] || page_per_frame[f] == 0) continue;
         uint64_t p = page_per_frame[f];
         uint64_t cyclical_dist = CyclicalDistance(page_to_swap_in, p);
 
@@ -188,8 +183,7 @@ uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame, uint64_t
     PMevict(frame_to_evict, page_per_frame[frame_to_evict]);
     bool visited[NUM_FRAMES] = {false};
     RemoveReference(frame_to_evict, 0, 0, visited); // Remove references to the evicted frame
-    //RecursiveClear(frame_to_evict, 0);
-    //PMwrite(parent_frame * PAGE_SIZE + parent_offset, frame_to_evict);
+    clearFrame(frame_to_evict);
     assert(frame_to_evict < NUM_FRAMES);
     return frame_to_evict;
 }
