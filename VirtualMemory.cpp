@@ -19,7 +19,6 @@ void SplitOffsetPage(uint64_t virtualAddress, uint64_t* pageIndex, uint64_t* off
 
 void ComputeBitsPerLevel(uint64_t bitsPerLevel[TABLES_DEPTH]) {
     int totalBits = VIRTUAL_ADDRESS_WIDTH - OFFSET_WIDTH;
-    int fullLevels = totalBits / OFFSET_WIDTH;
     int remainder = totalBits % OFFSET_WIDTH;
     bitsPerLevel[0] = remainder;
     for (int i = 1; i < TABLES_DEPTH; ++i) {
@@ -51,20 +50,6 @@ bool CheckEmptyTable(uint64_t frameIndex) {
     return true;  // All entries are 0 → table is empty
 }
 
-uint64_t GetMaxFrame() {
-    uint64_t max_frame = 0;
-    word_t value;
-    for (uint64_t addr = 0; addr < NUM_FRAMES * PAGE_SIZE; ++addr) {
-        PMread(addr, &value);
-        uint64_t current_frame = addr / PAGE_SIZE;
-        if (value != 0 && current_frame > max_frame) {
-            max_frame = current_frame;
-        }
-    }
-    return max_frame;
-}
-
-
 bool ShouldUseMaxFrame(uint64_t MaxFrameIndex){
     return MaxFrameIndex + 1 < NUM_FRAMES;
 }
@@ -74,23 +59,6 @@ void clearFrame(uint64_t frame) {
     for (int i = 0; i < PAGE_SIZE; ++i) {
         PMwrite(frame * PAGE_SIZE + i, 0);
     }
-}
-
-void RecursiveClear(uint64_t frame_to_evict, uint64_t depth) {
-    // Recursively clear the frame and its references
-    if (depth == TABLES_DEPTH) {
-        clearFrame(frame_to_evict);
-        return;
-    }
-
-    for (uint64_t offset = 0; offset < PAGE_SIZE; ++offset) {
-        word_t next;
-        PMread(frame_to_evict * PAGE_SIZE + offset, &next);
-        if (next != 0) {
-            RecursiveClear(next, depth + 1);
-        }
-    }
-    clearFrame(frame_to_evict);
 }
 
 
@@ -133,23 +101,23 @@ uint64_t CyclicalDistance(uint64_t a, uint64_t b) {
  void RemoveReference(uint64_t frame_to_remove, uint64_t curr_frame, uint64_t depth, bool visited[NUM_FRAMES]) {
     if (visited[curr_frame]) return;
     visited[curr_frame] = true;
-    if (depth == TABLES_DEPTH) {
+    if (depth == TABLES_DEPTH - 1) {
         return;
     }
     for (uint64_t offset = 0; offset < PAGE_SIZE; ++offset) {
         word_t next;
         PMread(curr_frame * PAGE_SIZE + offset, &next);
-        if (next == frame_to_remove) {
+        if ((uint64_t)next == frame_to_remove) {
             PMwrite(curr_frame * PAGE_SIZE + offset, 0);
         }
-        if (next != 0 && next != frame_to_remove) {
+        if (next != 0 && (uint64_t)next != frame_to_remove) {
             RemoveReference(frame_to_remove, next, depth + 1, visited);
         }
     }
 }
 
 
-uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame, uint64_t parent_offset, bool protected_frames[NUM_FRAMES]) {
+uint64_t AllocateFrame(uint64_t page_to_swap_in, bool protected_frames[NUM_FRAMES]) {
     // Allocate a new frame for the given page, either by finding an empty table or evicting an existing one
     bool used_frames[NUM_FRAMES] = {false};
     uint64_t page_per_frame[NUM_FRAMES] = {0};
@@ -188,7 +156,7 @@ uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame, uint64_t
     return frame_to_evict;
 }
 
-uint64_t ResolveAddress(uint64_t virtualAddress, bool allocate_if_missing, bool protected_frames[NUM_FRAMES]) {
+uint64_t ResolveAddress(uint64_t virtualAddress, bool protected_frames[NUM_FRAMES]) {
     uint64_t page_index, offset;
     SplitOffsetPage(virtualAddress, &page_index, &offset);
 
@@ -200,8 +168,7 @@ uint64_t ResolveAddress(uint64_t virtualAddress, bool allocate_if_missing, bool 
         word_t next_frame;
         PMread(current_frame * PAGE_SIZE + idx, &next_frame);
         if (next_frame == 0) {
-            if (!allocate_if_missing) return UINT64_MAX;
-            next_frame = AllocateFrame(page_index, current_frame, idx, protected_frames);
+            next_frame = AllocateFrame(page_index, protected_frames);
             protected_frames[next_frame] = true;
             PMwrite(current_frame * PAGE_SIZE + idx, next_frame);
             if (depth == TABLES_DEPTH - 1) {
@@ -218,7 +185,7 @@ uint64_t ResolveAddress(uint64_t virtualAddress, bool allocate_if_missing, bool 
 int VMread(uint64_t virtualAddress, word_t* value){
     assert(virtualAddress < VIRTUAL_MEMORY_SIZE);
     bool protected_frames[NUM_FRAMES] = {false};
-    uint64_t phys_addr = ResolveAddress(virtualAddress, false, protected_frames);
+    uint64_t phys_addr = ResolveAddress(virtualAddress, protected_frames);
     if (phys_addr == UINT64_MAX) return 0;
     PMread(phys_addr, value);
     return 1;
@@ -227,7 +194,7 @@ int VMread(uint64_t virtualAddress, word_t* value){
 int VMwrite(uint64_t virtualAddress, word_t value){
     assert(virtualAddress < VIRTUAL_MEMORY_SIZE);
     bool protected_frames[NUM_FRAMES] = {false};
-    uint64_t phys_addr = ResolveAddress(virtualAddress, true, protected_frames);
+    uint64_t phys_addr = ResolveAddress(virtualAddress, protected_frames);
     if (phys_addr == UINT64_MAX) return 0;
     PMwrite(phys_addr, value);
     return 1;
