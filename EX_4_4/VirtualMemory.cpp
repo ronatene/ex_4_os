@@ -4,6 +4,10 @@
 #include <cassert>
 #include <algorithm>
 
+struct VMState {
+    bool protected_frames[NUM_FRAMES] = {false};
+};
+
 void VMinitialize() {
   // Initialize the virtual memory
   for (uint64_t i = 0; i < PAGE_SIZE; ++i) {
@@ -132,18 +136,18 @@ void FindMaxFrame(uint64_t root_frame, uint64_t* max_frame_seen) {
     }
     visited.insert(curr_frame);
 
-    if (curr_frame > *max_frame_seen) {
+    // לא נחשב את frame 0 כ-max
+    if (curr_frame != 0 && curr_frame > *max_frame_seen) {
       *max_frame_seen = curr_frame;
     }
 
     for (uint64_t offset = 0; offset < PAGE_SIZE; ++offset) {
-      word_t next;
       uint64_t addr = curr_frame * PAGE_SIZE + offset;
-
       if (addr >= NUM_FRAMES * PAGE_SIZE) {
-        continue;
+        continue; // הגנה על גישה לא חוקית
       }
 
+      word_t next;
       PMread(addr, &next);
       if (next != 0) {
         stack.push({next, depth + 1});
@@ -151,6 +155,7 @@ void FindMaxFrame(uint64_t root_frame, uint64_t* max_frame_seen) {
     }
   }
 }
+
 
 //
 //void ScanUsedFramesForEvict(
@@ -251,85 +256,103 @@ void RemoveReference(uint64_t frame_to_remove, uint64_t curr_frame, uint64_t dep
 }
 
 
-uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame,  uint64_t parent_offset, bool protected_frames[NUM_FRAMES]) {
+uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame,
+                       uint64_t parent_offset, VMState& state) {
   // Allocate a new frame for the given page, either by finding an empty table or evicting an existing one
 
   uint64_t max_frame = 0;
   FindMaxFrame(0, &max_frame);
   printf("AllocateFrame: max frame seen is %llu\n", max_frame);
-  // If the page is already in memory, return the frame it is in
-  // if there is an empty table, we can use it
+
+  // First, try to find an empty table that is not protected
   for (uint64_t f = 1; f <= max_frame; ++f) {
-    if (CheckEmptyTable(f) && !protected_frames[f]) {
+    if (CheckEmptyTable(f) && !state.protected_frames[f]) {
+      printf("bool for protected is: %d\n", state.protected_frames[f]);
+      printf("i use now frame %llu:\n", f);
       return f;
     }
   }
-  // there's no empty table, maybe we can use the next unused frame
+
+  // If there's space for a new frame
   if (ShouldUseMaxFrame(max_frame)) {
     uint64_t new_frame = max_frame + 1;
+    printf("AllocateFrame: using new frame %llu\n", new_frame);
     clearFrame(new_frame);
     return new_frame;
   }
-  // find the frame based on max cyclical distance
+
+  // Else, find a frame to evict
   uint64_t max_distance = 0;
   uint64_t frame_to_evict = 0;
   bool used_frames[NUM_FRAMES] = {false};
   uint64_t page_per_frame[NUM_FRAMES] = {0};
   ScanUsedFramesForEvict(0, used_frames, page_per_frame);
-  // Start from f = 1 to skip frame 0, which is reserved as the root frame.
+
   for (uint64_t f = 1; f < NUM_FRAMES; ++f) {
-    if (!used_frames[f] || protected_frames[f] || page_per_frame[f] == 0) continue;
+    if (!used_frames[f] || state.protected_frames[f] || page_per_frame[f] == 0) {
+      continue;
+    }
+
     uint64_t p = page_per_frame[f];
     uint64_t cyclical_dist = CyclicalDistance(page_to_swap_in, p);
+
     if (cyclical_dist > max_distance) {
       max_distance = cyclical_dist;
       frame_to_evict = f;
     }
   }
+
   PMevict(frame_to_evict, page_per_frame[frame_to_evict]);
-  printf ("frame to evict %llu: ", frame_to_evict);
-  //bool visited[NUM_FRAMES] = {false};
-  //RemoveReference(frame_to_evict, 0, 0, visited); // Remove references to the evicted frame
+  printf("frame to evict %llu: \n", frame_to_evict);
+
   PMwrite(parent_frame * PAGE_SIZE + parent_offset, 0);
   clearFrame(frame_to_evict);
   assert(frame_to_evict < NUM_FRAMES);
+
   return frame_to_evict;
 }
 
 
 
-uint64_t ResolveAddress(uint64_t virtualAddress, bool protected_frames[NUM_FRAMES]) {
+uint64_t ResolveAddress(uint64_t virtualAddress, VMState& state) {
   uint64_t page_index, offset;
   SplitOffsetPage(virtualAddress, &page_index, &offset);
 
   uint64_t level_indices[TABLES_DEPTH];
   SplitPageIndexByLevels(page_index, level_indices);
-  printf ("page index: %llu ", page_index);
-  printf ("page index: %llu \n", offset);
+  printf("page index: %llu ", page_index);
+  printf("offset: %llu \n", offset);
+
   uint64_t current_frame = 0;
+
   for (int depth = 0; depth < TABLES_DEPTH; ++depth) {
     uint64_t idx = level_indices[depth];
     word_t next_frame;
     PMread(current_frame * PAGE_SIZE + idx, &next_frame);
+
     if (next_frame == 0) {
-      next_frame = AllocateFrame(page_index, current_frame, idx, protected_frames);
-      protected_frames[next_frame] = true;
+      next_frame = AllocateFrame(page_index, current_frame, idx, state);
+      state.protected_frames[next_frame] = true;
       PMwrite(current_frame * PAGE_SIZE + idx, next_frame);
+
       if (depth == TABLES_DEPTH - 1) {
         PMrestore(next_frame, page_index);
       }
     }
+
     current_frame = next_frame;
+
     assert(current_frame < NUM_FRAMES);
     assert(offset < PAGE_SIZE);
   }
+
   return current_frame * PAGE_SIZE + offset;
 }
 
 int VMread(uint64_t virtualAddress, word_t* value){
   assert(virtualAddress < VIRTUAL_MEMORY_SIZE);
-  bool protected_frames[NUM_FRAMES] = {false};
-  uint64_t phys_addr = ResolveAddress(virtualAddress, protected_frames);
+  static VMState state;
+  uint64_t phys_addr = ResolveAddress(virtualAddress, state);
   if (phys_addr == UINT64_MAX) return 0;
   PMread(phys_addr, value);
   printf ("vm read physical address: %llu ", phys_addr);
@@ -339,8 +362,8 @@ int VMread(uint64_t virtualAddress, word_t* value){
 
 int VMwrite(uint64_t virtualAddress, word_t value){
   assert(virtualAddress < VIRTUAL_MEMORY_SIZE);
-  bool protected_frames[NUM_FRAMES] = {false};
-  uint64_t phys_addr = ResolveAddress(virtualAddress, protected_frames);
+  static VMState state;
+  uint64_t phys_addr = ResolveAddress(virtualAddress, state);
   if (phys_addr == UINT64_MAX) return 0;
   PMwrite(phys_addr, value);
   printf ("vm write physical address: %llu ", phys_addr);
