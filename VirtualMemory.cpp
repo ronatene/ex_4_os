@@ -77,6 +77,7 @@ void ScanUsedFrames(
 
     if (depth == TABLES_DEPTH - 1) {
         page_per_frame[curr_frame] = page_path;
+        printf("ScanUsedFrames: frame %llu now maps to page %llu\n", curr_frame, page_path);
         return;     
     }
 
@@ -117,7 +118,7 @@ uint64_t CyclicalDistance(uint64_t a, uint64_t b) {
 }
 
 
-uint64_t AllocateFrame(uint64_t page_to_swap_in, bool protected_frames[NUM_FRAMES]) {
+uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame,  uint64_t parent_offset, bool protected_frames[NUM_FRAMES]) {
     // Allocate a new frame for the given page, either by finding an empty table or evicting an existing one
     bool used_frames[NUM_FRAMES] = {false};
     uint64_t page_per_frame[NUM_FRAMES] = {0};
@@ -138,19 +139,20 @@ uint64_t AllocateFrame(uint64_t page_to_swap_in, bool protected_frames[NUM_FRAME
     // find the frame based on max cyclical distance
     uint64_t max_distance = 0;
     uint64_t frame_to_evict = 0;
+    // Start from f = 1 to skip frame 0, which is reserved as the root frame.
     for (uint64_t f = 1; f < NUM_FRAMES; ++f) {
         if (!used_frames[f] || protected_frames[f] || page_per_frame[f] == 0) continue;
         uint64_t p = page_per_frame[f];
         uint64_t cyclical_dist = CyclicalDistance(page_to_swap_in, p);
-
         if (cyclical_dist > max_distance) {
             max_distance = cyclical_dist;
             frame_to_evict = f;
         }
     }
     PMevict(frame_to_evict, page_per_frame[frame_to_evict]);
-    bool visited[NUM_FRAMES] = {false};
-    RemoveReference(frame_to_evict, 0, 0, visited); // Remove references to the evicted frame
+    //bool visited[NUM_FRAMES] = {false};
+    //RemoveReference(frame_to_evict, 0, 0, visited); // Remove references to the evicted frame
+    PMwrite(parent_frame * PAGE_SIZE + parent_offset, 0);
     clearFrame(frame_to_evict);
     assert(frame_to_evict < NUM_FRAMES);
     return frame_to_evict;
@@ -168,7 +170,7 @@ uint64_t ResolveAddress(uint64_t virtualAddress, bool protected_frames[NUM_FRAME
         word_t next_frame;
         PMread(current_frame * PAGE_SIZE + idx, &next_frame);
         if (next_frame == 0) {
-            next_frame = AllocateFrame(page_index, protected_frames);
+            next_frame = AllocateFrame(page_index, current_frame, idx, protected_frames);
             protected_frames[next_frame] = true;
             PMwrite(current_frame * PAGE_SIZE + idx, next_frame);
             if (depth == TABLES_DEPTH - 1) {
