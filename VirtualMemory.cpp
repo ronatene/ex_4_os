@@ -61,19 +61,34 @@ void clearFrame(uint64_t frame) {
     }
 }
 
+void FindMaxFrame(
+    uint64_t curr_frame,
+    uint64_t depth,
+    uint64_t* max_frame_seen
+) {
+    if (curr_frame > *max_frame_seen) {
+        *max_frame_seen = curr_frame;
+    }
+    if (depth == TABLES_DEPTH - 1) {
+        return;     
+    }
+    for (uint64_t offset = 0; offset < PAGE_SIZE; ++offset) {
+        word_t next;
+        PMread(curr_frame * PAGE_SIZE + offset, &next);
+        if (next != 0) {
+            FindMaxFrame(next, depth + 1, max_frame_seen);
+        }
+    }
+}
 
-void ScanUsedFrames(
+void ScanUsedFramesForEvict(
     uint64_t curr_frame,
     uint64_t depth,
     uint64_t page_path,
     bool used_frames[NUM_FRAMES],
-    uint64_t page_per_frame[NUM_FRAMES],
-    uint64_t* max_frame_seen
+    uint64_t page_per_frame[NUM_FRAMES]
 ) {
     used_frames[curr_frame] = true;
-    if (curr_frame > *max_frame_seen) {
-        *max_frame_seen = curr_frame;
-    }
 
     if (depth == TABLES_DEPTH - 1) {
         page_per_frame[curr_frame] = page_path;
@@ -85,14 +100,12 @@ void ScanUsedFrames(
         word_t next;
         PMread(curr_frame * PAGE_SIZE + offset, &next);
         if (next != 0) {
-            if ((uint64_t)next > *max_frame_seen) {
-                *max_frame_seen = next;
-            }
-            ScanUsedFrames(next, depth + 1, (page_path << OFFSET_WIDTH) | offset,
-                           used_frames, page_per_frame, max_frame_seen);
+            ScanUsedFramesForEvict(next, depth + 1, (page_path << OFFSET_WIDTH) | offset,
+                                   used_frames, page_per_frame);
         }
     }
 }
+
 
 uint64_t CyclicalDistance(uint64_t a, uint64_t b) {
     uint64_t d = (a > b) ? a - b : b - a;
@@ -120,10 +133,11 @@ uint64_t CyclicalDistance(uint64_t a, uint64_t b) {
 
 uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame,  uint64_t parent_offset, bool protected_frames[NUM_FRAMES]) {
     // Allocate a new frame for the given page, either by finding an empty table or evicting an existing one
-    bool used_frames[NUM_FRAMES] = {false};
-    uint64_t page_per_frame[NUM_FRAMES] = {0};
+
     uint64_t max_frame = 0;
-    ScanUsedFrames(0, 0, 0, used_frames, page_per_frame, &max_frame);
+    FindMaxFrame(0, 0, &max_frame);
+    printf("AllocateFrame: max frame seen is %llu\n", max_frame);
+    // If the page is already in memory, return the frame it is in
     // if there is an empty table, we can use it
     for (uint64_t f = 1; f <= max_frame; ++f) {
         if (CheckEmptyTable(f) && !protected_frames[f]) {
@@ -139,6 +153,9 @@ uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame,  uint64_
     // find the frame based on max cyclical distance
     uint64_t max_distance = 0;
     uint64_t frame_to_evict = 0;
+    bool used_frames[NUM_FRAMES] = {false};
+    uint64_t page_per_frame[NUM_FRAMES] = {0};
+    ScanUsedFramesForEvict(0, 0, 0, used_frames, page_per_frame);
     // Start from f = 1 to skip frame 0, which is reserved as the root frame.
     for (uint64_t f = 1; f < NUM_FRAMES; ++f) {
         if (!used_frames[f] || protected_frames[f] || page_per_frame[f] == 0) continue;
@@ -149,6 +166,7 @@ uint64_t AllocateFrame(uint64_t page_to_swap_in, uint64_t parent_frame,  uint64_
             frame_to_evict = f;
         }
     }
+
     PMevict(frame_to_evict, page_per_frame[frame_to_evict]);
     //bool visited[NUM_FRAMES] = {false};
     //RemoveReference(frame_to_evict, 0, 0, visited); // Remove references to the evicted frame
